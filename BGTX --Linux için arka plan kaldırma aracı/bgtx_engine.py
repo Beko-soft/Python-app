@@ -1,104 +1,123 @@
 import sys
 import os
-import time # İşlem süresini ölçmek için
+import time
 from rembg import remove
 from PIL import Image
 import io
 
-# BGTX_MODEL_NAME'i rembg varsayılan modeli olarak bırakıyoruz. 
-# rembg, modeli otomatik olarak indirir ve cache'ler.
+# Model Adı ve Modeli bellekte tutmak için dışarıda bir session objesi tutma
 BGTX_MODEL_NAME = "u2net"
+# rembg, session_name ile modelin tekrar yüklenmesini engeller.
+global BGTX_SESSION
+BGTX_SESSION = None
+
 
 def initialize_bgtx_model():
     """AI modelinin yüklü olup olmadığını kontrol eder ve yükler."""
+    global BGTX_SESSION
     print("--- [BGTX ENGINE BAŞLATILIYOR] ---")
     print(f"1. Kontrol: '{BGTX_MODEL_NAME}' AI Modeli Kontrol Ediliyor...")
-    
-    start_time = time.time()
+
     try:
-        # rembg.remove fonksiyonunu ilk kez çağırmak, modelin indirilmesini/yüklenmesini tetikler.
-        # Bu işlem (model indirilmişse) çok hızlıdır. İlk çalıştırmada model indirilir ve cachelenir.
-        temp_img = Image.new('RGB', (1, 1), color = 'red')
-        temp_byte_arr = io.BytesIO()
-        temp_img.save(temp_byte_arr, format='PNG')
-        temp_data = temp_byte_arr.getvalue()
-        
-        # Modeli yüklemek için remove'u çağırıyoruz. model parametresi modelin adını belirtir.
-        # Bu, modelin diske cache'lenmesini garanti eder.
-        remove(temp_data, session_name=BGTX_MODEL_NAME, post_process_mask=True) 
-        
-        elapsed_time = time.time() - start_time
-        print(f"1. BAŞARILI: Model yüklendi ve hazır. (Süre: {elapsed_time:.2f} sn)")
-        print("   -> BGTX, artık bu model dosyasını her zaman çevrimdışı (offline) kullanacaktır.")
-        
+        # Session nesnesini rembg'den alıyoruz. Bu nesne bellek içi cache'i yönetir.
+        from rembg import new_session
+        BGTX_SESSION = new_session(BGTX_MODEL_NAME)
+
+        # Bu noktada model yüklenmiş veya cache'lenmiş olacaktır.
+        print("1. BAŞARILI: Model yüklendi ve hazır.")
+        print("   -> BGTX, bu session sayesinde modeli yeniden yüklemeyecektir.")
+
     except Exception as e:
         print("1. KRİTİK HATA: AI Modeli yüklenirken sorun çıktı!")
-        print("   -> Hata notu: Bağlantı sorunu veya 'onnxruntime' gibi bağımlılıklar eksik olabilir.")
         print(f"   -> Hata Detayı: {e}")
-        sys.exit(1) # Programı sonlandır
+        sys.exit(1)
 
-def process_and_save_image():
-    """Kullanıcıdan dosya yolunu alır ve arka planı kaldırıp kaydeder."""
-    
-    # --- 2. Giriş Alma Aşaması ---
-    while True:
-        input_path = input("\nLütfen arka planı kaldırılacak resmin TAM YOLUNU girin (Örn: /home/kanka/resim.png): ").strip()
-        
-        if os.path.exists(input_path):
-            break
-        else:
-            print(f"HATA: '{input_path}' yolu bulunamadı. Lütfen geçerli bir yol girin.")
-    
-    print("-" * 35)
-    print(f"2. Giriş: İşlenecek dosya: {input_path}")
-    
-    # --- 3. İşlem Aşaması (BGTX Core) ---
-    print("3. İşlem: BGTX Çekirdeği çalıştırılıyor...")
-    proc_start_time = time.time()
-    
+
+def process_image(input_path):
+    """Tek bir resmin arka planını kaldırır ve sonucun dosya yolunu döndürür."""
+    global BGTX_SESSION
+
     try:
         # 3.1. Giriş dosyasını bayt (binary) formatında oku
         with open(input_path, "rb") as f:
             input_data = f.read()
-        print("3.1. OK: Resim dosyası belleğe yüklendi.")
 
-        # 3.2. Arka plan kaldırma Engine'ini çağır (En yoğun kısım)
-        output_data = remove(input_data, session_name=BGTX_MODEL_NAME)
-        
+        # 3.2. Arka plan kaldırma Engine'ini çağır (session objesini kullanıyoruz!)
+        # Engine, modelin zaten BGTX_SESSION içinde olduğunu bilecek.
+        output_data = remove(input_data, session=BGTX_SESSION)
+
         # 3.3. Sonucu bir PIL Image objesine çevir
         output_image = Image.open(io.BytesIO(output_data))
-        print("3.2. OK: Arka plan kaldırma tamamlandı. Şeffaf imaj objesi oluşturuldu.")
-        
-        # --- 4. Çıktı Aşaması ---
-        
-        # Orijinal dosya adını ve uzantısını ayır
-        base, ext = os.path.splitext(input_path)
-        # Yeni dosya adı oluştur (Önemli: Çıktı her zaman PNG olmalı, çünkü PNG şeffaflığı destekler)
-        output_path = f"{base}_bgtx.png" 
 
-        # 4.1. Yeni dosyayı diske kaydet
-        # Kayıt formatının PNG olması şeffaflığı korur.
-        output_image.save(output_path, "PNG") 
-        
-        proc_elapsed_time = time.time() - proc_start_time
-        print("-" * 35)
-        print("4. BGTX BAŞARILI SONUÇ RAPORU:")
-        print(f"   -> İşlenen Dosya: {os.path.basename(input_path)}")
-        print(f"   -> Çıktı Dosyası: {output_path}")
-        print(f"   -> Toplam İşlem Süresi: {proc_elapsed_time:.2f} saniye")
-        print("   -> BGTX görevi tamamladı. Zeus ve Cektor'a GUI entegrasyonu kaldı!")
-        
+        # 4. Çıktı Yolu Oluştur ve Kaydet
+        base, ext = os.path.splitext(input_path)
+        output_path = f"{base}_bgtx.png"
+        output_image.save(output_path, "PNG")
+
+        return {"status": "success", "input": os.path.basename(input_path), "output_path": output_path}
+
     except Exception as e:
-        print("-" * 35)
-        print("4. KRİTİK HATA: BGTX İşlemi sırasında beklenmedik bir sorun oluştu.")
-        print(f"Hata Kodu: {e}")
-        print("Lütfen dosya formatının ve içeriğinin geçerli olduğundan emin ol.")
-        sys.exit(1)
+        return {"status": "error", "input": os.path.basename(input_path), "message": str(e)}
+
+
+def batch_process_images(image_paths):
+    """Verilen tüm resim yollarını sırayla işler ve toplu rapor döndürür."""
+
+    total_files = len(image_paths)
+    print(f"\n3. İşlem: Toplam {total_files} adet resim için BGTX Çekirdeği çalıştırılıyor...")
+    proc_start_time = time.time()
+    results = []
+
+    for i, path in enumerate(image_paths):
+        print(f"   -> [{i + 1}/{total_files}] İşleniyor: {os.path.basename(path)}")
+        result = process_image(path)
+        results.append(result)
+
+    proc_elapsed_time = time.time() - proc_start_time
+
+    # --- 4. Nihai Çıktı Raporu ---
+    print("-" * 35)
+    print("4. BGTX TOPLU SONUÇ RAPORU:")
+    print(f"   -> Toplam İşlenen Dosya: {total_files}")
+    print(f"   -> Toplam İşlem Süresi: {proc_elapsed_time:.2f} saniye")
+
+    success_count = sum(1 for r in results if r['status'] == 'success')
+    error_count = total_files - success_count
+    print(f"   -> BAŞARILI: {success_count} adet, HATALI: {error_count} adet.")
+
+    if error_count > 0:
+        print("\n[Hata Detayları]:")
+        for r in results:
+            if r['status'] == 'error':
+                print(f"   - HATA ({r['input']}): {r['message']}")
+
+    print("-" * 35)
+    return results
+
 
 # --- ANA ÇALIŞMA ALANI ---
 if __name__ == "__main__":
-    # Modelin hazır olduğundan emin ol (offline kullanımı garanti eder)
-    initialize_bgtx_model() 
-    
-    # İşleme döngüsünü başlat
-    process_and_save_image()
+    initialize_bgtx_model()
+
+    # Kullanıcıdan birden fazla dosya yolunu alıyoruz (Ayırıcı: virgül)
+    while True:
+        input_line = input(
+            "\nLütfen işlenecek resimlerin TAM YOLLARINI aralarına VİRGÜL (,) koyarak girin (Örn: /yol/resim1.png,/yol/resim2.jpg): "
+        ).strip()
+
+        # Girişi virgülle ayırıp boşlukları temizliyoruz
+        paths = [p.strip() for p in input_line.split(',') if p.strip()]
+
+        # Tüm yolların geçerli olduğunu kontrol et
+        valid_paths = [p for p in paths if os.path.exists(p)]
+
+        if not paths:
+            print("HATA: Hiç dosya yolu girmediniz.")
+        elif len(valid_paths) != len(paths):
+            invalid_paths = [p for p in paths if not os.path.exists(p)]
+            print(f"HATA: Aşağıdaki yollar GEÇERSİZ veya BULUNAMADI: {', '.join(invalid_paths)}")
+        else:
+            break
+
+    # Toplu işlemi başlat
+    batch_process_images(paths)
